@@ -5,5 +5,7 @@ services:
       - '@database'
       - '@entity_type.manager'
       - '@cache_tags.invalidator'
+      - '@module_handler'
+      - '@config.installer'
     tags:
       - { name: drush.command }
