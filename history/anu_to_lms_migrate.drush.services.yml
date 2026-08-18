@@ -1,0 +1,9 @@
+services:
+  anu_to_lms_migrate.commands:
+    class: Drupal\anu_to_lms_migrate\Drush\Commands\AnuToLmsCommands
+    arguments:
+      - '@database'
+      - '@entity_type.manager'
+      - '@cache_tags.invalidator'
+    tags:
+      - { name: drush.command }
