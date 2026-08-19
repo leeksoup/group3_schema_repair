@@ -1,0 +1,8 @@
+services:
+  group3_schema_repair.commands:
+    class: Drupal\group3_schema_repair\Drush\Commands\Group3SchemaRepairCommands
+    arguments:
+      - '@entity.last_installed_schema.repository'
+      - '@keyvalue'
+    tags:
+      - { name: drush.command }

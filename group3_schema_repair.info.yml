@@ -1,0 +1,5 @@
+name: 'Group 3 Schema Repair'
+type: module
+description: 'Provides guarded Drush repairs for interrupted Group 2 to Group 3 updates.'
+package: Custom
+core_version_requirement: ^10 || ^11
