@@ -8,5 +8,6 @@ services:
       - '@module_handler'
       - '@config.installer'
       - '@config.factory'
+      - '@entity.last_installed_schema.repository'
     tags:
       - { name: drush.command }
