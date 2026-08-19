@@ -109,11 +109,29 @@ final class AnuToLmsCommands extends DrushCommands {
    * Repairs LMS Classes student management for migrated LMS courses.
    */
   #[CLI\Command(name: 'anu-to-lms:repair-students', aliases: ['atlrs'])]
+  #[CLI\Option(
+    name: 'all-courses',
+    description: 'Repair every LMS course, not only Anu-migrated courses.',
+  )]
+  #[CLI\Option(name: 'course-id', description: 'Repair one LMS course ID.')]
   #[CLI\Usage(
     name: 'drush anu-to-lms:repair-students',
-    description: 'Grant LMS Classes permissions and create missing default classes for migrated courses.',
+    description: 'Grant LMS Classes permissions and create missing default classes.',
   )]
-  public function repairStudents(): void {
+  #[CLI\Usage(
+    name: 'drush anu-to-lms:repair-students --course-id=13',
+    description: 'Create a missing default class for LMS course 13.',
+  )]
+  #[CLI\Usage(
+    name: 'drush anu-to-lms:repair-students --all-courses',
+    description: 'Create missing default classes for all LMS courses.',
+  )]
+  public function repairStudents(
+    array $options = [
+      'all-courses' => FALSE,
+      'course-id' => NULL,
+    ],
+  ): void {
     if (!$this->moduleHandler->moduleExists('lms_classes')) {
       throw new \RuntimeException(
         'The lms_classes module is not enabled. Run drush en lms_classes -y first.',
@@ -122,7 +140,9 @@ final class AnuToLmsCommands extends DrushCommands {
 
     $this->configInstaller->installDefaultConfig('module', 'lms_classes');
     $updated_roles = $this->grantCourseStudentPermissions();
-    $created_classes = $this->createMissingCourseClasses();
+    $created_classes = $this->createMissingCourseClasses(
+      $this->studentRepairCourseIds($options),
+    );
 
     $this->cacheTagsInvalidator->invalidateTags([
       'config:group.role.lms_course-teacher',
@@ -674,7 +694,7 @@ final class AnuToLmsCommands extends DrushCommands {
   /**
    * Creates a default class for migrated LMS courses that have no classes.
    */
-  private function createMissingCourseClasses(): int {
+  private function createMissingCourseClasses(?array $course_ids = NULL): int {
     $group_storage = $this->entityTypeManager->getStorage('group');
     $relationship_type_storage = $this->entityTypeManager->getStorage('group_relationship_type');
 
@@ -685,7 +705,7 @@ final class AnuToLmsCommands extends DrushCommands {
       return 0;
     }
 
-    $course_ids = $this->migratedCourseIds();
+    $course_ids ??= $this->migratedCourseIds();
     if ($course_ids === []) {
       return 0;
     }
@@ -717,6 +737,37 @@ final class AnuToLmsCommands extends DrushCommands {
     }
 
     return $created;
+  }
+
+  /**
+   * Returns the LMS course IDs selected by repair-students options.
+   */
+  private function studentRepairCourseIds(array $options): ?array {
+    $course_id = $options['course-id'] ?? NULL;
+    if ($course_id !== NULL) {
+      if (!ctype_digit((string) $course_id) || (int) $course_id <= 0) {
+        throw new \InvalidArgumentException('The --course-id option must be a positive integer.');
+      }
+      return [(int) $course_id];
+    }
+
+    if (!empty($options['all-courses'])) {
+      return $this->allLmsCourseIds();
+    }
+
+    return NULL;
+  }
+
+  /**
+   * Returns IDs for every LMS course group.
+   */
+  private function allLmsCourseIds(): array {
+    $ids = $this->entityTypeManager->getStorage('group')->getQuery()
+      ->accessCheck(FALSE)
+      ->condition('type', 'lms_course')
+      ->execute();
+
+    return array_values(array_map('intval', $ids));
   }
 
   /**
