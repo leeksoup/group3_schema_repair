@@ -174,6 +174,54 @@ final class AnuToLmsCommands extends DrushCommands {
   }
 
   /**
+   * Repairs stale Group 2 references in Views after a Group 3 upgrade.
+   */
+  #[CLI\Command(name: 'anu-to-lms:repair-group3-views', aliases: ['atlrg3v'])]
+  #[CLI\Usage(
+    name: 'drush anu-to-lms:repair-group3-views',
+    description: 'Rewrite stale group_content references in Views config.',
+  )]
+  public function repairGroup3Views(): void {
+    if (!$this->moduleHandler->moduleExists('views')) {
+      throw new \RuntimeException('The views module is not enabled.');
+    }
+
+    $updated = [];
+    foreach ($this->configFactory->listAll('views.view.') as $name) {
+      $view = $this->configFactory->getEditable($name);
+      $original = $view->getRawData();
+      $repaired = $this->replaceGroup2ViewReferences($original);
+      if ($name === 'views.view.group_members') {
+        $repaired = $this->unsetNestedKey($repaired, [
+          'display',
+          'default',
+          'display_options',
+          'arguments',
+          'gid',
+          'default_argument_skip_url',
+        ]);
+      }
+
+      if ($repaired !== $original) {
+        $view->setData($repaired)->save(TRUE);
+        $updated[] = [$name];
+      }
+    }
+
+    $this->cacheTagsInvalidator->invalidateTags(
+      array_map(static fn (array $row): string => 'config:' . $row[0], $updated),
+    );
+
+    $this->printAuditRows(
+      'Repaired Group 3 Views',
+      ['Config'],
+      $updated,
+      'No stale Group 2 View references needed repair.',
+    );
+    $this->logger()->success(\dt('Processed @count Views.', ['@count' => count($updated)]));
+  }
+
+  /**
    * Confirms the LMS synchronized teacher role configuration exists.
    */
   private function assertTeacherRoleConfiguration(): void {
@@ -538,6 +586,51 @@ final class AnuToLmsCommands extends DrushCommands {
     }
 
     return FALSE;
+  }
+
+  /**
+   * Replaces Group 2 View references with Group 3 equivalents.
+   */
+  private function replaceGroup2ViewReferences(array $data): array {
+    $search = ['group_content_plugins', 'group.content_type.', 'group_content'];
+    $replace = ['group_relation_plugins', 'group.relationship_type.', 'group_relationship'];
+    $new_data = [];
+
+    foreach ($data as $key => $value) {
+      $new_key = is_string($key) ? str_replace($search, $replace, $key) : $key;
+
+      if (is_string($value)) {
+        $new_data[$new_key] = str_replace($search, $replace, $value);
+      }
+      elseif (is_array($value)) {
+        $new_data[$new_key] = $this->replaceGroup2ViewReferences($value);
+      }
+      else {
+        $new_data[$new_key] = $value;
+      }
+    }
+
+    return $new_data;
+  }
+
+  /**
+   * Unsets a nested array key when every parent key exists.
+   */
+  private function unsetNestedKey(array $data, array $parents): array {
+    $key = array_shift($parents);
+    if ($key === NULL) {
+      return $data;
+    }
+    if ($parents === []) {
+      unset($data[$key]);
+      return $data;
+    }
+    if (!isset($data[$key]) || !is_array($data[$key])) {
+      return $data;
+    }
+
+    $data[$key] = $this->unsetNestedKey($data[$key], $parents);
+    return $data;
   }
 
   /**
