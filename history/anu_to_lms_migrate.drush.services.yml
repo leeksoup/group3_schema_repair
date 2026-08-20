@@ -7,6 +7,5 @@ services:
       - '@cache_tags.invalidator'
       - '@module_handler'
       - '@config.installer'
-      - '@config.factory'
     tags:
       - { name: drush.command }

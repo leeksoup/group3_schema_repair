@@ -7,5 +7,7 @@ services:
       - '@config.factory'
       - '@entity_type.manager'
       - '@database'
+      - '@module_handler'
+      - '@cache_tags.invalidator'
     tags:
       - { name: drush.command }
