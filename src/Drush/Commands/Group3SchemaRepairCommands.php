@@ -150,4 +150,157 @@ final class Group3SchemaRepairCommands extends DrushCommands {
     ));
   }
 
+  /**
+   * Repairs missing group_roles field instances on membership relationships.
+   */
+  #[CLI\Command(name: 'group3-schema-repair:repair-group-roles-instances', aliases: ['g3srri'])]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:repair-group-roles-instances',
+    description: 'Create missing group_roles field instances on Group membership relationship types.',
+  )]
+  public function repairGroupRolesInstances(): void {
+    $field_storage = $this->entityTypeManager
+      ->getStorage('field_storage_config')
+      ->load('group_relationship.group_roles');
+    if ($field_storage === NULL) {
+      throw new \RuntimeException('field.storage.group_relationship.group_roles is missing. Run group3-schema-repair:repair-group-roles-storage first.');
+    }
+
+    $relationship_types = $this->entityTypeManager
+      ->getStorage('group_relationship_type')
+      ->loadByProperties(['content_plugin' => 'group_membership']);
+    if ($relationship_types === []) {
+      throw new \RuntimeException('No group_membership relationship types were found.');
+    }
+
+    $field_config_storage = $this->entityTypeManager->getStorage('field_config');
+    $form_display_storage = $this->entityTypeManager->getStorage('entity_form_display');
+    $view_display_storage = $this->entityTypeManager->getStorage('entity_view_display');
+    $created = [];
+
+    foreach ($relationship_types as $relationship_type) {
+      $relationship_type_id = $relationship_type->id();
+      $field_id = "group_relationship.$relationship_type_id.group_roles";
+      if ($field_config_storage->load($field_id) !== NULL) {
+        continue;
+      }
+
+      $field_config_storage->save($field_config_storage->create([
+        'field_storage' => $field_storage,
+        'bundle' => $relationship_type_id,
+        'label' => 'Roles',
+        'settings' => [
+          'handler' => 'group_type:group_role',
+          'handler_settings' => [
+            'group_type_id' => $relationship_type->getGroupTypeId(),
+          ],
+        ],
+      ]));
+
+      $default_display_id = "group_relationship.$relationship_type_id.default";
+      $form_display = $form_display_storage->load($default_display_id)
+        ?: $form_display_storage->create([
+          'targetEntityType' => 'group_relationship',
+          'bundle' => $relationship_type_id,
+          'mode' => 'default',
+          'status' => TRUE,
+        ]);
+      $form_display_storage->save($form_display->setComponent('group_roles', [
+        'type' => 'options_buttons',
+      ]));
+
+      $view_display = $view_display_storage->load($default_display_id)
+        ?: $view_display_storage->create([
+          'targetEntityType' => 'group_relationship',
+          'bundle' => $relationship_type_id,
+          'mode' => 'default',
+          'status' => TRUE,
+        ]);
+      $view_display_storage->save($view_display->setComponent('group_roles', [
+        'label' => 'above',
+        'type' => 'entity_reference_label',
+        'settings' => [
+          'link' => 0,
+        ],
+      ]));
+
+      $created[] = [$field_id];
+    }
+
+    if ($created !== []) {
+      $this->io()->table(['Created field instance'], $created);
+    }
+    $this->logger()->success(\dt(
+      'Created @count missing group_roles field instances.',
+      ['@count' => count($created)],
+    ));
+  }
+
+  /**
+   * Removes group_roles rows attached to non-membership relationships.
+   */
+  #[CLI\Command(name: 'group3-schema-repair:repair-group-roles-table', aliases: ['g3srrt'])]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:repair-group-roles-table',
+    description: 'Delete invalid group_roles field rows whose relationship is not a group_membership.',
+  )]
+  public function repairGroupRolesTable(): void {
+    $schema = $this->database->schema();
+    if (!$schema->tableExists('group_relationship__group_roles')) {
+      throw new \RuntimeException('The group_relationship__group_roles table does not exist.');
+    }
+    if (!$schema->tableExists('group_relationship_field_data')) {
+      throw new \RuntimeException('The group_relationship_field_data table does not exist.');
+    }
+
+    $query = $this->database->select('group_relationship__group_roles', 'gr');
+    $query->innerJoin('group_relationship_field_data', 'r', 'r.id = gr.entity_id');
+    $rows = $query
+      ->fields('gr', [
+        'bundle',
+        'deleted',
+        'entity_id',
+        'revision_id',
+        'langcode',
+        'delta',
+        'group_roles_target_id',
+      ])
+      ->fields('r', ['gid', 'plugin_id'])
+      ->condition('r.plugin_id', 'group_membership', '<>')
+      ->execute()
+      ->fetchAll(\PDO::FETCH_ASSOC);
+
+    if ($rows === []) {
+      $this->logger()->success(\dt('No invalid group_roles rows were found.'));
+      return;
+    }
+
+    $this->io()->table(
+      ['Relationship', 'Group', 'Plugin', 'Role', 'Delta'],
+      array_map(static fn (array $row): array => [
+        $row['entity_id'],
+        $row['gid'],
+        $row['plugin_id'],
+        $row['group_roles_target_id'],
+        $row['delta'],
+      ], $rows),
+    );
+
+    foreach ($rows as $row) {
+      $this->database->delete('group_relationship__group_roles')
+        ->condition('bundle', $row['bundle'])
+        ->condition('deleted', $row['deleted'])
+        ->condition('entity_id', $row['entity_id'])
+        ->condition('revision_id', $row['revision_id'])
+        ->condition('langcode', $row['langcode'])
+        ->condition('delta', $row['delta'])
+        ->execute();
+    }
+
+    $this->logger()->success(\dt(
+      'Deleted @count invalid group_roles rows from non-membership relationships.',
+      ['@count' => count($rows)],
+    ));
+  }
+
 }
