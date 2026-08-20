@@ -303,4 +303,144 @@ final class Group3SchemaRepairCommands extends DrushCommands {
     ));
   }
 
+  /**
+   * Repairs stale Group 2 active config names after a partial update.
+   */
+  #[CLI\Command(name: 'group3-schema-repair:repair-stale-config', aliases: ['g3srsc'])]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:repair-stale-config',
+    description: 'Rename or delete remaining stale group_content active config after Group update 10300 partially ran.',
+  )]
+  public function repairStaleConfig(): void {
+    $converted = [];
+    $deleted = [];
+
+    foreach ($this->configFactory->listAll('group.content_type.') as $old_name) {
+      $new_name = str_replace('group.content_type.', 'group.relationship_type.', $old_name);
+      $this->moveConfig(
+        $old_name,
+        $new_name,
+        static fn (array $data): array => $data,
+        $converted,
+        $deleted,
+      );
+    }
+
+    foreach ($this->configFactory->listAll('field.storage.group_content.') as $old_name) {
+      $new_name = str_replace('field.storage.group_content.', 'field.storage.group_relationship.', $old_name);
+      $this->moveConfig(
+        $old_name,
+        $new_name,
+        static function (array $data) use ($old_name, $new_name): array {
+          $data['entity_type'] = 'group_relationship';
+          if (($data['id'] ?? NULL) === substr($old_name, strlen('field.storage.'))) {
+            $data['id'] = substr($new_name, strlen('field.storage.'));
+          }
+          return $data;
+        },
+        $converted,
+        $deleted,
+      );
+    }
+
+    foreach ($this->configFactory->listAll('field.field.group_content.') as $old_name) {
+      $new_name = str_replace('field.field.group_content.', 'field.field.group_relationship.', $old_name);
+      $this->moveConfig(
+        $old_name,
+        $new_name,
+        static function (array $data) use ($old_name, $new_name): array {
+          $data['entity_type'] = 'group_relationship';
+          if (($data['id'] ?? NULL) === substr($old_name, strlen('field.field.'))) {
+            $data['id'] = substr($new_name, strlen('field.field.'));
+          }
+          return self::replaceGroup2ConfigDependencies($data);
+        },
+        $converted,
+        $deleted,
+      );
+    }
+
+    foreach (['entity_form_display', 'entity_view_display'] as $display_key) {
+      foreach ($this->configFactory->listAll("core.$display_key.group_content.") as $old_name) {
+        $new_name = str_replace("core.$display_key.group_content.", "core.$display_key.group_relationship.", $old_name);
+        $this->moveConfig(
+          $old_name,
+          $new_name,
+          static function (array $data): array {
+            $data['targetEntityType'] = 'group_relationship';
+            if (isset($data['id'])) {
+              $data['id'] = preg_replace('/^group_content\./', 'group_relationship.', (string) $data['id']);
+            }
+            return self::replaceGroup2ConfigDependencies($data);
+          },
+          $converted,
+          $deleted,
+        );
+      }
+    }
+
+    $rows = array_merge(
+      array_map(static fn (array $row): array => [$row[0], $row[1], 'converted'], $converted),
+      array_map(static fn (array $row): array => [$row[0], $row[1], 'deleted, replacement existed'], $deleted),
+    );
+    if ($rows !== []) {
+      $this->io()->table(['Old config', 'New config', 'Action'], $rows);
+    }
+
+    $this->logger()->success(\dt(
+      'Processed @converted stale config conversions and @deleted stale config deletions.',
+      [
+        '@converted' => count($converted),
+        '@deleted' => count($deleted),
+      ],
+    ));
+  }
+
+  /**
+   * Moves an old config object to its Group 3 name, or deletes duplicate stale config.
+   */
+  private function moveConfig(
+    string $old_name,
+    string $new_name,
+    callable $normalizer,
+    array &$converted,
+    array &$deleted,
+  ): void {
+    $old_config = $this->configFactory->getEditable($old_name);
+    if ($old_config->isNew()) {
+      return;
+    }
+
+    $new_config = $this->configFactory->getEditable($new_name);
+    if ($new_config->isNew()) {
+      $new_config->setData($normalizer($old_config->getRawData()))->save(TRUE);
+      $converted[] = [$old_name, $new_name];
+    }
+    else {
+      $deleted[] = [$old_name, $new_name];
+    }
+
+    $old_config->delete();
+  }
+
+  /**
+   * Rewrites config dependencies from Group 2 names to Group 3 names.
+   */
+  private static function replaceGroup2ConfigDependencies(array $data): array {
+    if (!empty($data['dependencies']['config']) && is_array($data['dependencies']['config'])) {
+      $data['dependencies']['config'] = array_map(static function ($dependency_name): string {
+        return str_replace([
+          'group.content_type.',
+          'field.storage.group_content.',
+          'field.field.group_content.',
+        ], [
+          'group.relationship_type.',
+          'field.storage.group_relationship.',
+          'field.field.group_relationship.',
+        ], (string) $dependency_name);
+      }, $data['dependencies']['config']);
+    }
+    return $data;
+  }
+
 }
