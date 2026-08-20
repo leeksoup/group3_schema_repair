@@ -402,6 +402,7 @@ final class Group3SchemaRepairCommands extends DrushCommands {
   public function repairStaleConfig(): void {
     $converted = [];
     $deleted = [];
+    $dependencies_repaired = [];
 
     foreach ($this->configFactory->listAll('group.content_type.') as $old_name) {
       $new_name = str_replace('group.content_type.', 'group.relationship_type.', $old_name);
@@ -467,6 +468,18 @@ final class Group3SchemaRepairCommands extends DrushCommands {
       }
     }
 
+    // Other modules can depend on renamed Group config, for example a
+    // Pathauto pattern that was configured for a Group 2 content type.
+    foreach ($this->configFactory->listAll() as $name) {
+      $config = $this->configFactory->getEditable($name);
+      $original = $config->getRawData();
+      $repaired = self::replaceGroup2ConfigDependencies($original);
+      if ($repaired !== $original) {
+        $config->setData($repaired)->save(TRUE);
+        $dependencies_repaired[] = [$name];
+      }
+    }
+
     $rows = array_merge(
       array_map(static fn (array $row): array => [$row[0], $row[1], 'converted'], $converted),
       array_map(static fn (array $row): array => [$row[0], $row[1], 'deleted, replacement existed'], $deleted),
@@ -474,12 +487,16 @@ final class Group3SchemaRepairCommands extends DrushCommands {
     if ($rows !== []) {
       $this->io()->table(['Old config', 'New config', 'Action'], $rows);
     }
+    if ($dependencies_repaired !== []) {
+      $this->io()->table(['Updated config dependency'], $dependencies_repaired);
+    }
 
     $this->logger()->success(\dt(
-      'Processed @converted stale config conversions and @deleted stale config deletions.',
+      'Processed @converted stale config conversions, @deleted stale config deletions, and @dependencies repaired config dependencies.',
       [
         '@converted' => count($converted),
         '@deleted' => count($deleted),
+        '@dependencies' => count($dependencies_repaired),
       ],
     ));
   }
@@ -549,8 +566,18 @@ final class Group3SchemaRepairCommands extends DrushCommands {
       }
     }
 
-    foreach ($this->configFactory->listAll('views.view.') as $name) {
+    foreach ($this->configFactory->listAll() as $name) {
       $raw = $this->configFactory->get($name)->getRawData();
+      $dependencies = $raw['dependencies']['config'] ?? [];
+      foreach ($dependencies as $dependency) {
+        if (str_starts_with((string) $dependency, 'group.content_type.')) {
+          $rows[] = [$name, 'depends on group.content_type'];
+        }
+      }
+
+      if (!str_starts_with($name, 'views.view.')) {
+        continue;
+      }
       if ($this->arrayContainsString($raw, 'group_content')) {
         $rows[] = [$name, 'contains group_content'];
       }
