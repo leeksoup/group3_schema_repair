@@ -4,5 +4,8 @@ services:
     arguments:
       - '@entity.last_installed_schema.repository'
       - '@keyvalue'
+      - '@config.factory'
+      - '@entity_type.manager'
+      - '@database'
     tags:
       - { name: drush.command }
