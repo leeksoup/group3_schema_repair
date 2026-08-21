@@ -4,6 +4,26 @@ For Drupal users upgrading from version 2. There are longstanding issues with th
 * https://www.drupal.org/project/group/issues/3391452
 * https://www.drupal.org/project/group/issues/3618552
 
+## Module commands
+   Purpose                                                    Standalone command
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Read-only Group 3 audit                                    drush group3-schema-repair:audit
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Audit a user’s migrated-course access too                  drush group3-schema-repair:audit USER_ID
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Repair stale Group 2 references inside Views               drush group3-schema-repair:repair-views
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Repair installed schema repository before Group update     drush group3-schema-repair:repair-repository
+   10305
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Create missing active group_roles field storage            drush group3-schema-repair:repair-group-roles-storage
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Create missing membership group_roles field instances      drush group3-schema-repair:repair-group-roles-instances
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Delete invalid role rows on non-membership                 drush group3-schema-repair:repair-group-roles-table
+   relationships
+  ─────────────────────────────────────────────────────────  ─────────────────────────────────────────────────────────
+   Rename/delete stale Group 2 active config                  drush group3-schema-repair:repair-stale-config
 
 ## Suggested usage:
 
