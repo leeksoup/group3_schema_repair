@@ -1,7 +1,8 @@
 # Group 3 schema repair module
 
-For Drupal users upgrading from version 2. There are longstanding issues with the DB migration for this upgrade. For example:
-
+For Drupal users upgrading from version 2. There are longstanding issues with the DB migration for this upgrade. See:
+* https://www.drupal.org/project/group/issues/3391452
+* https://www.drupal.org/project/group/issues/3618552
 
 
 ## Suggested usage:
