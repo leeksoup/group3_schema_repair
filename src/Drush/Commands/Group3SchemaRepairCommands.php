@@ -7,7 +7,9 @@ namespace Drupal\group3_schema_repair\Drush\Commands;
 use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Database\Connection;
+use Drupal\Core\Entity\EntityDefinitionUpdateManagerInterface;
 use Drupal\Core\Entity\EntityLastInstalledSchemaRepositoryInterface;
+use Drupal\Core\Entity\EntityTypeInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Field\BaseFieldDefinition;
@@ -25,6 +27,7 @@ final class Group3SchemaRepairCommands extends DrushCommands {
 
   public function __construct(
     private readonly EntityLastInstalledSchemaRepositoryInterface $lastInstalledSchemaRepository,
+    private readonly EntityDefinitionUpdateManagerInterface $entityDefinitionUpdateManager,
     private readonly KeyValueFactoryInterface $keyValueFactory,
     private readonly ConfigFactoryInterface $configFactory,
     private readonly EntityTypeManagerInterface $entityTypeManager,
@@ -52,6 +55,8 @@ final class Group3SchemaRepairCommands extends DrushCommands {
     $account = $uid !== NULL ? $this->loadUser($uid) : NULL;
     $issues = 0;
 
+    $issues += $this->auditInstalledEntityDefinitions();
+    $issues += $this->auditRelationshipFieldSchema();
     $issues += $this->auditStaleGroupConfig();
     $issues += $this->auditGroupRoleConfig();
     $issues += $this->auditGroupRolesFieldConfig();
@@ -170,6 +175,182 @@ final class Group3SchemaRepairCommands extends DrushCommands {
     $this->logger()->success(\dt(
       'Copied @count installed Group field-storage definitions from group_content to group_relationship. Run drush updb -y next.',
       ['@count' => count($copied)],
+    ));
+  }
+
+  /**
+   * Displays the runtime and installed definitions for a Group 3 entity type.
+   */
+  #[CLI\Command(name: 'group3-schema-repair:show-entity-definitions', aliases: ['g3srsed'])]
+  #[CLI\Argument(
+    name: 'entity_type_id',
+    description: 'Group 3 entity type to inspect. Defaults to group_relationship.',
+  )]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:show-entity-definitions',
+    description: 'Display the Group relationship runtime and installed definitions.',
+  )]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:show-entity-definitions group_relationship_type',
+    description: 'Display the Group relationship type runtime and installed definitions.',
+  )]
+  public function showEntityDefinitions(string $entity_type_id = 'group_relationship'): void {
+    if (!in_array($entity_type_id, ['group_relationship_type', 'group_relationship'], TRUE)) {
+      throw new \InvalidArgumentException(sprintf(
+        'Only group_relationship_type and group_relationship can be inspected, not %s.',
+        $entity_type_id,
+      ));
+    }
+
+    $runtime = $this->getUncachedEntityTypeDefinition($entity_type_id);
+    $installed = $this->lastInstalledSchemaRepository
+      ->getLastInstalledDefinition($entity_type_id);
+    $change = $this->entityDefinitionUpdateManager->getChangeList()[$entity_type_id] ?? [];
+
+    $this->io()->section('Runtime definition (uncached)');
+    $this->io()->writeln(var_export((array) $runtime, TRUE));
+    $this->io()->section('Last-installed definition');
+    $this->io()->writeln(var_export($installed === NULL ? NULL : (array) $installed, TRUE));
+    $this->io()->section('Definition update status');
+    $this->io()->writeln(var_export($change, TRUE));
+  }
+
+  /**
+   * Records missing Group 3 entity definitions as installed.
+   *
+   * This is for an interrupted Group 2 to Group 3 update where the Group 3
+   * entity types and their tables are already live, but Drupal's installed
+   * schema repository does not contain their definitions.
+   */
+  #[CLI\Command(name: 'group3-schema-repair:repair-entity-definitions', aliases: ['g3sred'])]
+  #[CLI\Option(
+    name: 'synchronize',
+    description: 'Replace existing installed definitions when Drupal reports they need updating.',
+  )]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:repair-entity-definitions',
+    description: 'Record missing installed definitions for live Group 3 relationship entity types.',
+  )]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:repair-entity-definitions --synchronize',
+    description: 'Synchronize installed metadata after the audit reports a Group relationship definition mismatch.',
+  )]
+  public function repairEntityDefinitions(
+    array $options = ['synchronize' => FALSE],
+  ): void {
+    $schema = $this->database->schema();
+    foreach (['group_relationship', 'group_relationship_field_data'] as $table) {
+      if (!$schema->tableExists($table)) {
+        throw new \RuntimeException(sprintf(
+          'The %s table does not exist. This repair is only safe after Group 3 relationship tables are present.',
+          $table,
+        ));
+      }
+    }
+
+    $changes = $this->entityDefinitionUpdateManager->getChangeList();
+    $recorded = [];
+    foreach (['group_relationship_type', 'group_relationship'] as $entity_type_id) {
+      if (!$this->entityTypeManager->hasDefinition($entity_type_id)) {
+        throw new \RuntimeException(sprintf(
+          'The %s entity type is not available. Finish enabling/updating Group first.',
+          $entity_type_id,
+        ));
+      }
+      $installed_definition = $this->lastInstalledSchemaRepository
+        ->getLastInstalledDefinition($entity_type_id);
+      $needs_synchronization = isset($changes[$entity_type_id]['entity_type']);
+      if ($installed_definition !== NULL && (!$options['synchronize'] || !$needs_synchronization)) {
+        continue;
+      }
+
+      $definition = $this->getUncachedEntityTypeDefinition($entity_type_id);
+      $this->lastInstalledSchemaRepository->setLastInstalledDefinition($definition);
+      if ($entity_type_id === 'group_relationship' && $installed_definition !== NULL) {
+        // Match Group update 10300: the update manager saves the generated
+        // entity-storage schema metadata and refreshes its indexes.
+        $this->entityDefinitionUpdateManager->updateEntityType($definition);
+        $recorded[] = [$entity_type_id, 'schema metadata synchronized'];
+      }
+      else {
+        $recorded[] = [$entity_type_id, $installed_definition === NULL ? 'recorded' : 'synchronized'];
+      }
+    }
+
+    $this->printAuditRows(
+      'Recorded Group 3 installed entity definitions',
+      ['Entity type', 'Action'],
+      $recorded,
+      'Group 3 installed entity definitions already exist; no changes made.',
+    );
+  }
+
+  /**
+   * Completes the Group 10301 fieldable-entity schema update.
+   */
+  #[CLI\Command(name: 'group3-schema-repair:repair-relationship-fields', aliases: ['g3srrf'])]
+  #[CLI\Usage(
+    name: 'drush group3-schema-repair:repair-relationship-fields',
+    description: 'Refresh Group relationship field schema metadata after the Group 2 to 3 update.',
+  )]
+  public function repairRelationshipFields(): void {
+    $changes = $this->entityDefinitionUpdateManager->getChangeList();
+    if (isset($changes['group_relationship']['entity_type'])) {
+      throw new \RuntimeException(
+        'The group_relationship entity type still needs updating. Run group3-schema-repair:repair-entity-definitions --synchronize first.',
+      );
+    }
+
+    $field_changes = $changes['group_relationship']['field_storage_definitions'] ?? [];
+    if ($field_changes === []) {
+      $this->logger()->success(\dt('No Group relationship field schema updates are pending.'));
+      return;
+    }
+
+    $expected_fields = ['uuid', 'uid', 'gid', 'entity_id', 'group_type', 'group_roles'];
+    $changed_field_names = array_keys($field_changes);
+    sort($expected_fields);
+    sort($changed_field_names);
+    if (
+      $changed_field_names !== $expected_fields
+      || array_filter(
+        $field_changes,
+        static fn ($change): bool => $change !== EntityDefinitionUpdateManagerInterface::DEFINITION_UPDATED,
+      ) !== []
+    ) {
+      throw new \RuntimeException(sprintf(
+        'Refusing to apply unexpected Group relationship field changes: %s.',
+        implode(', ', array_keys($field_changes)),
+      ));
+    }
+
+    $entity_type = $this->lastInstalledSchemaRepository
+      ->getLastInstalledDefinition('group_relationship');
+    if ($entity_type === NULL) {
+      throw new \RuntimeException(
+        'The installed group_relationship definition is missing. Run group3-schema-repair:repair-entity-definitions first.',
+      );
+    }
+    $field_storage_definitions = $this->lastInstalledSchemaRepository
+      ->getLastInstalledFieldStorageDefinitions('group_relationship');
+
+    $sandbox = [];
+    do {
+      $this->entityDefinitionUpdateManager->updateFieldableEntityType(
+        $entity_type,
+        $field_storage_definitions,
+        $sandbox,
+      );
+    } while (($sandbox['#finished'] ?? 1) < 1);
+
+    $remaining = $this->entityDefinitionUpdateManager->getChangeList();
+    if (!empty($remaining['group_relationship']['field_storage_definitions'])) {
+      throw new \RuntimeException('Group relationship field schema updates remain after the repair.');
+    }
+
+    $this->logger()->success(\dt(
+      'Completed Group 10301-equivalent field schema metadata repair for: @fields.',
+      ['@fields' => implode(', ', array_keys($field_changes))],
     ));
   }
 
@@ -594,6 +775,75 @@ final class Group3SchemaRepairCommands extends DrushCommands {
     );
 
     return $rows === [] ? 0 : 1;
+  }
+
+  /**
+   * Reports missing installed definitions for live Group 3 entity types.
+   */
+  private function auditInstalledEntityDefinitions(): int {
+    $rows = [];
+    $changes = $this->entityDefinitionUpdateManager->getChangeList();
+    foreach (['group_relationship_type', 'group_relationship'] as $entity_type_id) {
+      if (!$this->entityTypeManager->hasDefinition($entity_type_id)) {
+        $rows[] = [$entity_type_id, 'runtime entity type missing'];
+        continue;
+      }
+      if ($this->lastInstalledSchemaRepository->getLastInstalledDefinition($entity_type_id) === NULL) {
+        $rows[] = [$entity_type_id, 'installed definition missing'];
+      }
+      elseif (isset($changes[$entity_type_id]['entity_type'])) {
+        $rows[] = [$entity_type_id, 'installed definition differs from runtime definition'];
+      }
+    }
+
+    $this->printAuditRows(
+      'Group 3 installed entity definitions',
+      ['Entity type', 'Problem'],
+      $rows,
+      'Group 3 installed entity definitions look present.',
+    );
+
+    return $rows === [] ? 0 : 1;
+  }
+
+  /**
+   * Reports pending Group relationship field storage schema updates.
+   */
+  private function auditRelationshipFieldSchema(): int {
+    $changes = $this->entityDefinitionUpdateManager->getChangeList();
+    $field_changes = $changes['group_relationship']['field_storage_definitions'] ?? [];
+    $rows = array_map(
+      static fn (string $field_name, string $change): array => [$field_name, $change],
+      array_keys($field_changes),
+      $field_changes,
+    );
+
+    $this->printAuditRows(
+      'Group relationship field schema',
+      ['Field', 'Problem'],
+      $rows,
+      'Group relationship field schema metadata looks current.',
+    );
+
+    return $rows === [] ? 0 : 1;
+  }
+
+  /**
+   * Gets an entity definition using the same uncached source as status checks.
+   */
+  private function getUncachedEntityTypeDefinition(string $entity_type_id): EntityTypeInterface {
+    $this->entityTypeManager->useCaches(FALSE);
+    $definitions = $this->entityTypeManager->getDefinitions();
+    $this->entityTypeManager->useCaches(TRUE);
+
+    if (!isset($definitions[$entity_type_id])) {
+      throw new \RuntimeException(sprintf(
+        'The %s entity type is not available while rebuilding entity definitions.',
+        $entity_type_id,
+      ));
+    }
+
+    return clone $definitions[$entity_type_id];
   }
 
   /**

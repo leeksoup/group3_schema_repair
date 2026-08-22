@@ -3,6 +3,7 @@ services:
     class: Drupal\group3_schema_repair\Drush\Commands\Group3SchemaRepairCommands
     arguments:
       - '@entity.last_installed_schema.repository'
+      - '@entity.definition_update_manager'
       - '@keyvalue'
       - '@config.factory'
       - '@entity_type.manager'
